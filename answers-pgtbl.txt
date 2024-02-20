@@ -1,0 +1,1 @@
+all data related syscall, such as fstat

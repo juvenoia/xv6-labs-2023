@@ -275,6 +275,9 @@ uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 
 // Recursively free page-table pages.
 // All leaf mappings must already have been removed.
+// *already removed* was done in the free function.
+// it firstly cleans the pte for the consecutive blocks of the pagetable,
+// then clean the pte. thus, pte & (PTE_R|PTE_W|PTE_X) gives out 0 when encountered the 3rd level.
 void
 freewalk(pagetable_t pagetable)
 {
@@ -291,6 +294,32 @@ freewalk(pagetable_t pagetable)
     }
   }
   kfree((void*)pagetable);
+}
+
+// print pagetable.
+void
+vmprint(pagetable_t pagetable, int depth)
+{
+    if (depth == 4)
+        return;
+    if (depth == 1) {
+        printf("page table %p\n", (uint64) pagetable);
+    }
+    // there are 2^9 = 512 PTEs in a page table.
+    for(int i = 0; i < 512; i++){
+        pte_t pte = pagetable[i];
+        if(pte & PTE_V){
+            // this PTE points to a lower-level page table.
+            uint64 child = PTE2PA(pte);
+            for (int i = 0; i < depth; i ++) {
+                printf("..");
+                if (i == depth - 1)
+                    printf(" ");
+            }
+            printf("%d: pte %p pa %p\n", i, (uint64) pte, child);
+            vmprint((pagetable_t)child, depth + 1);
+        }
+    }
 }
 
 // Free user memory pages,
