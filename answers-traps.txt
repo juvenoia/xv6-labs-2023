@@ -1,0 +1,10 @@
+a0, a1, a2..
+a2
+there is no function call on f & g, the compiler inlined these functions and precalculated them.
+64a
+30
+He110 World
+He110 Wo
+0x726c6400
+no
+any value currently on register a2
