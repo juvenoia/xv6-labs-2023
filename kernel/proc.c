@@ -16,6 +16,7 @@ int nextpid = 1;
 struct spinlock pid_lock;
 
 extern void forkret(void);
+extern int ref[32768];
 static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
@@ -155,8 +156,9 @@ found:
 static void
 freeproc(struct proc *p)
 {
-  if(p->trapframe)
+  if(p->trapframe) { // how to clear trapframe in our framework?
     kfree((void*)p->trapframe);
+  }
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
@@ -210,8 +212,8 @@ proc_pagetable(struct proc *p)
 void
 proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
-  uvmunmap(pagetable, TRAMPOLINE, 1, 0);
-  uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  uvmunmap(pagetable, TRAMPOLINE, 1, 0); // trampoline page-link is cleared, but the data is still there
+  uvmunmap(pagetable, TRAPFRAME, 1, 0); // try to clean here.
   uvmfree(pagetable, sz);
 }
 
@@ -293,6 +295,13 @@ fork(void)
     freeproc(np);
     release(&np->lock);
     return -1;
+  }
+  pte_t *pte;
+  uint64 pa;
+  for (i = 0; i < p->sz; i += PGSIZE) {
+    pte = walk(p->pagetable, i, 0);
+    pa = PTE2PA(*pte);
+    ref[rfidx(pa)] ++; // fork gives the addr an extra link.
   }
   np->sz = p->sz;
 
@@ -428,7 +437,6 @@ wait(uint64 addr)
       release(&wait_lock);
       return -1;
     }
-    
     // Wait for a child to exit.
     sleep(p, &wait_lock);  //DOC: wait-sleep
   }

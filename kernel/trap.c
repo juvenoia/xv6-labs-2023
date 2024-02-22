@@ -10,7 +10,7 @@ struct spinlock tickslock;
 uint ticks;
 
 extern char trampoline[], uservec[], userret[];
-
+extern int ref[];
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
 
@@ -46,10 +46,10 @@ usertrap(void)
   w_stvec((uint64)kernelvec);
 
   struct proc *p = myproc();
-  
+
   // save user program counter.
   p->trapframe->epc = r_sepc();
-  
+
   if(r_scause() == 8){
     // system call
 
@@ -65,6 +65,45 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if (r_scause() == 15) {
+    //a write page-fault occured. now we will process it
+    uint64 va = r_stval();
+    if (va >= MAXVA) {
+      printf("invalid page accessed.\n");
+      setkilled(p);
+      exit(-1);
+    }
+    pte_t *pte = walk(p->pagetable, va, 0);
+    uint64 pa = PTE2PA(*pte);
+    uint64 flags = PTE_FLAGS(*pte);
+    if (flags & PTE_C) {
+      if (flags & PTE_O) {
+        setkilled(p); // COW page does not allow writing, but some are originally non-writable
+        printf("PTE_O killed?\n");
+      }
+      else {
+        char *mem;
+        if((mem = kalloc()) == 0) {
+          setkilled(p);
+          printf("KALLOC killed?\n");
+        }
+        else {
+          memmove(mem, (char*)pa, PGSIZE);
+          flags ^= PTE_C; // no longer a cow page.
+          flags ^= PTE_W; // COW does not allow writes.
+          // such reallocating indicates that previous page is not used anymore!
+          uvmunmap(p->pagetable, PGROUNDDOWN(va), 1, 0); // first, remove the page link va original(caused by cowpage)
+          kfree((char *)pa); // unlink, and a clean-out.
+          if (mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, flags) != 0) {
+            // then, link it with the new allocated memory page.
+            setkilled(p);
+            printf("MAPPAGES killed?\n");
+          }
+        }
+      }
+    } else {
+      setkilled(p);
+    }
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
@@ -72,7 +111,6 @@ usertrap(void)
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     setkilled(p);
   }
-
   if(killed(p))
     exit(-1);
 

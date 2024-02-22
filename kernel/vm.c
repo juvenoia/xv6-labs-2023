@@ -5,7 +5,6 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
-
 /*
  * the kernel's page table.
  */
@@ -14,6 +13,8 @@ pagetable_t kernel_pagetable;
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
+
+extern int ref[32768];
 
 // Make a direct-map page table for the kernel.
 pagetable_t
@@ -190,8 +191,8 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       panic("uvmunmap: not mapped");
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
+    uint64 pa = PTE2PA(*pte);
     if(do_free){
-      uint64 pa = PTE2PA(*pte);
       kfree((void*)pa);
     }
     *pte = 0;
@@ -315,7 +316,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  //char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -324,11 +325,26 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    // what if this is already a cow-page?
+    if (flags & PTE_C) {
+      // already a cow-page. no need to modify.
+    } else {
+      if (flags & PTE_C) {
+        panic("why?\n");
+      }
+      if ((flags & PTE_W) == 0) // there exists where W
+        flags |= PTE_O; // cannot be modified
+      else
+        flags ^= PTE_W; // cannot be modified, also, but PTE_O == zero
+      flags |= PTE_C;
+    }
+
+    *pte = (*pte & (~(0x3FFL))) | flags;
+//    if((mem = kalloc()) == 0)
+//      goto err;
+//    memmove(mem, (char*)pa, PGSIZE);
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
+      //kfree(mem);
       goto err;
     }
   }
@@ -360,14 +376,32 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
   pte_t *pte;
-
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     if(va0 >= MAXVA)
       return -1;
     pte = walk(pagetable, va0, 0);
-    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0 ||
-       (*pte & PTE_W) == 0)
+    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
+      return -1;
+    if ((*pte & PTE_C)) {
+      if (*pte & PTE_O) {
+        //printf("PTE_O encountered. \n"); // what if the page does not allow us to write?
+        return -1;
+      }
+      uint64 pa = PTE2PA(*pte);
+      uint64 flags = PTE_FLAGS(*pte);
+      char *mem;
+      mem = kalloc();
+      memmove(mem, (char*)pa, PGSIZE);
+      flags ^= PTE_C; // no longer a cow page.
+      flags ^= PTE_W; // COW does not allow writes.
+      // such reallocating indicates that previous page is not used anymore!
+      uvmunmap(pagetable, PGROUNDDOWN(va0), 1, 0);
+      kfree((char *)pa); // unlink, and clean.
+      mappages(pagetable, PGROUNDDOWN(va0), PGSIZE, (uint64)mem, flags);
+      pte = walk(pagetable, va0, 0);
+    }
+    if ((*pte & PTE_W) == 0)
       return -1;
     pa0 = PTE2PA(*pte);
     n = PGSIZE - (dstva - va0);
