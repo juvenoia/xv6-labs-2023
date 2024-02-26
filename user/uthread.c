@@ -14,6 +14,7 @@
 struct thread {
   char       stack[STACK_SIZE]; /* the thread's stack */
   int        state;             /* FREE, RUNNING, RUNNABLE */
+  uint64     ctx[14];
 };
 struct thread all_thread[MAX_THREAD];
 struct thread *current_thread;
@@ -28,7 +29,7 @@ thread_init(void)
   current_thread = &all_thread[0];
   current_thread->state = RUNNING;
 }
-
+//p/x all_thread[0].state all_thread[1].state all_thread[2].state all_thread[3].state
 void 
 thread_schedule(void)
 {
@@ -60,6 +61,9 @@ thread_schedule(void)
      * Invoke thread_switch to switch from t to next_thread:
      * thread_switch(??, ??);
      */
+    thread_switch((uint64)t->ctx, (uint64)next_thread->ctx);
+    // save current ctx at its thread-struc, and load the next one.
+    // thread state should be changed.
   } else
     next_thread = 0;
 }
@@ -74,6 +78,8 @@ thread_create(void (*func)())
   }
   t->state = RUNNABLE;
   // YOUR CODE HERE
+  t->ctx[0] = (uint64)func; // save ra to continue running.
+  t->ctx[1] = (uint64)t->stack + STACK_SIZE; // use its current stack
 }
 
 void 
@@ -94,7 +100,6 @@ thread_a(void)
   a_started = 1;
   while(b_started == 0 || c_started == 0)
     thread_yield();
-  
   for (i = 0; i < 100; i++) {
     printf("thread_a %d\n", i);
     a_n += 1;
