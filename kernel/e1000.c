@@ -93,7 +93,7 @@ e1000_init(uint32 *xregs)
 }
 
 int
-e1000_transmit(struct mbuf *m)
+e1000_transmit(struct mbuf *m) // this transmit is called maybe from user, maybe from kernel.
 {
   //
   // Your code here.
@@ -102,7 +102,24 @@ e1000_transmit(struct mbuf *m)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
   //
-  
+  acquire(&e1000_lock); // when you acquire a lock, sysintr are ignored.
+  uint32 nxpack = regs[E1000_TDT];
+  if ((tx_ring[nxpack].status & E1000_TXD_STAT_DD) == 0) {
+    // last buf in this ring has not been transmitted. current packet loss
+    release(&e1000_lock);
+    return -1;
+  }
+  // free the last mbuf.
+  if (tx_mbufs[nxpack])
+    mbuffree(tx_mbufs[nxpack]), tx_mbufs[nxpack] = 0;
+  tx_ring[nxpack].cmd = 0;
+  tx_ring[nxpack].addr = (uint64) m->head;
+  tx_ring[nxpack].length = m->len;
+  tx_ring[nxpack].cmd |= E1000_TXD_CMD_EOP;
+  tx_ring[nxpack].cmd |= E1000_TXD_CMD_RS;
+  tx_mbufs[nxpack] = m;
+  regs[E1000_TDT] = (nxpack + 1) % TX_RING_SIZE;
+  release(&e1000_lock);
   return 0;
 }
 
@@ -115,6 +132,22 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
+  while (1) {
+    // intr is called when e1000 received a new packet.
+    // that means, there could be consecutive packets.
+    uint32 nxpack = (regs[E1000_RDT]);
+    nxpack = (nxpack + 1) % RX_RING_SIZE;
+    if ((rx_ring[nxpack].status & E1000_RXD_STAT_DD) == 0) {
+      return;
+    }
+    rx_mbufs[nxpack]->len = rx_ring[nxpack].length;
+    net_rx(rx_mbufs[nxpack]);
+    // last one has been processed. now we allocate a new one.
+    rx_mbufs[nxpack] = mbufalloc(0);
+    rx_ring[nxpack].addr = (uint64) rx_mbufs[nxpack]->head;
+    rx_ring[nxpack].status = (char)0;
+    regs[E1000_RDT] = nxpack;
+  }
 }
 
 void
