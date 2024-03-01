@@ -30,7 +30,9 @@ struct {
   // Linked list of all buffers, through prev/next.
   // Sorted by how recently the buffer was used.
   // head.next is most recent, head.prev is least.
-  struct buf head;
+//  struct buf head;
+  struct buf hs[13];
+  struct spinlock hsl[13];
 } bcache;
 
 void
@@ -41,14 +43,17 @@ binit(void)
   initlock(&bcache.lock, "bcache");
 
   // Create linked list of buffers
-  bcache.head.prev = &bcache.head;
-  bcache.head.next = &bcache.head;
+  for (int i = 0; i < 13; i ++) {
+    bcache.hs[i].prev = &bcache.hs[i];
+    bcache.hs[i].next = &bcache.hs[i];
+    initlock(&bcache.hsl[i], "bcache");
+  }
   for(b = bcache.buf; b < bcache.buf+NBUF; b++){
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
+    b->next = bcache.hs[0].next;
+    b->prev = &bcache.hs[0];
     initsleeplock(&b->lock, "buffer");
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
+    bcache.hs[0].next->prev = b;
+    bcache.hs[0].next = b;
   }
 }
 
@@ -58,32 +63,95 @@ binit(void)
 static struct buf*
 bget(uint dev, uint blockno)
 {
+  //acquire(&bcache.lock);
   struct buf *b;
-
-  acquire(&bcache.lock);
+  uint id = blockno % 13;
+  acquire(&bcache.hsl[id]);
+  // this ensures no two programs are changing paralleling.
 
   // Is the block already cached?
-  for(b = bcache.head.next; b != &bcache.head; b = b->next){
-    if(b->dev == dev && b->blockno == blockno){
-      b->refcnt++;
-      release(&bcache.lock);
+//  for(b = bcache.head.next; b != &bcache.head; b = b->next){
+//    if(b->dev == dev && b->blockno == blockno){
+//      b->refcnt++;
+//      release(&bcache.lock);
+//      acquiresleep(&b->lock);
+//      return b;
+//    }
+//  }
+//  HERE WE USE A HASHTABLE TO DOWN THE PRESSURE, COMPARED TO ONLY ONE BCACHE.
+//  I.E. CACHE ARE SPLITTED INTO DIFFERENT ONES.
+  //printf("%d bucket is called, which is block %d\n", blockno % 13, blockno);
+  for (b = bcache.hs[id].next; b != &bcache.hs[id]; b = b->next) {
+    if (b->dev == dev && b->blockno == blockno) {
+      //printf("!!!!!!!!!!!we found the block in the memory!!!!!!!!!!!!\n");
+      b->refcnt ++;
+      release(&bcache.hsl[id]);
       acquiresleep(&b->lock);
+      //release(&bcache.lock);
       return b;
     }
   }
 
   // Not cached.
   // Recycle the least recently used (LRU) unused buffer.
-  for(b = bcache.head.prev; b != &bcache.head; b = b->prev){
-    if(b->refcnt == 0) {
+//  for(b = bcache.head.prev; b != &bcache.head; b = b->prev){
+//    if(b->refcnt == 0) {
+//      b->dev = dev;
+//      b->blockno = blockno;
+//      b->valid = 0;
+//      b->refcnt = 1;
+//      release(&bcache.lock);
+//      acquiresleep(&b->lock);
+//      return b;
+//    }
+//  }
+// SEQUENTIAL FIND is OK.
+// such reading to b is undefined(i.e, not locked. only those
+// on the linkedlist could be locked!)
+  // this do not need block since acquire turned off the intr?
+
+  // try to find a blank bracket.
+
+  for (b = bcache.hs[id].next; b != &bcache.hs[id]; b = b->next) {
+    if (b->refcnt == 0) {
+      //printf("!!!!!!!!!!!we found the block in the memory!!!!!!!!!!!!\n");
+      b->refcnt = 1;
       b->dev = dev;
       b->blockno = blockno;
       b->valid = 0;
-      b->refcnt = 1;
-      release(&bcache.lock);
+      release(&bcache.hsl[id]);
       acquiresleep(&b->lock);
+      //release(&bcache.lock);
       return b;
     }
+  }
+  for (int k = 0; k < 13; k ++) {
+    if (k == id)
+      continue;
+    acquire(&bcache.hsl[k]);
+    for (b = bcache.hs[k].next; b != &bcache.hs[k]; b = b->next) {
+      if (b->refcnt == 0) {
+        //printf("!!!!!!!!!!!we found the block in the memory!!!!!!!!!!!!\n");
+        b->refcnt = 1;
+        b->dev = dev;
+        b->blockno = blockno;
+        b->valid = 0;
+
+        b->prev->next = b->next;
+        b->next->prev = b->prev;
+
+        b->next = bcache.hs[id].next;
+        b->prev = &bcache.hs[id];
+        bcache.hs[id].next->prev = b;
+        bcache.hs[id].next = b;
+
+        release(&bcache.hsl[k]);
+        release(&bcache.hsl[id]);
+        acquiresleep(&b->lock);
+        return b;
+      }
+    }
+    release(&bcache.hsl[k]);
   }
   panic("bget: no buffers");
 }
@@ -118,36 +186,38 @@ brelse(struct buf *b)
 {
   if(!holdingsleep(&b->lock))
     panic("brelse");
-
   releasesleep(&b->lock);
-
-  acquire(&bcache.lock);
+  uint id = (b->blockno) % 13;
+  acquire(&bcache.hsl[id]);
   b->refcnt--;
   if (b->refcnt == 0) {
+    //printf("%d block is removed at bucket %d\n", blockno, blockno % 13);
     // no one is waiting for it.
-    b->next->prev = b->prev;
-    b->prev->next = b->next;
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
+//    b->dev = 0;
+//    b->blockno = 0;
+//    b->next = bcache.head.next;
+//    b->prev = &bcache.head;
+//    bcache.head.next->prev = b;
+//    bcache.head.next = b;
+    // release the block in the hash list.
   }
-  
-  release(&bcache.lock);
+  release(&bcache.hsl[id]);
 }
 
 void
 bpin(struct buf *b) {
-  acquire(&bcache.lock);
+  uint id = (b->blockno) % 13;
+  acquire(&bcache.hsl[id]);
   b->refcnt++;
-  release(&bcache.lock);
+  release(&bcache.hsl[id]);
 }
 
 void
 bunpin(struct buf *b) {
-  acquire(&bcache.lock);
+  uint id = (b->blockno) % 13;
+  acquire(&bcache.hsl[id]);
   b->refcnt--;
-  release(&bcache.lock);
+  release(&bcache.hsl[id]);
 }
 
 
