@@ -26,7 +26,8 @@ struct inode {
   short minor;
   short nlink;
   uint size;
-  uint addrs[NDIRECT+1];
+  uint addrs[NDIRECT+2]; //NDIRECT = [0, 10], 11 for page 1, 12 for page 2.
+  char pth[DIRSIZ];  // type == 3, pth valid.
 };
 
 // map major device number to device functions.

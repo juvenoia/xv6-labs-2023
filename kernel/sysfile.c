@@ -315,7 +315,6 @@ sys_open(void)
     return -1;
 
   begin_op();
-
   if(omode & O_CREATE){
     ip = create(path, T_FILE, 0, 0);
     if(ip == 0){
@@ -323,7 +322,17 @@ sys_open(void)
       return -1;
     }
   } else {
-    if((ip = namei(path)) == 0){
+    int i;
+    for (i = 0; i < 10; i ++) {
+      ip = namei(path);
+      if (ip == 0 || ip->type != T_SYMLINK || (omode & O_NOFOLLOW))
+        // null, not symlnk, or NOT ALLOWING RECURSIVE SYMLNK, then stop.
+        break;
+      memmove(path, ip->pth, DIRSIZ);
+//      path = ip->pth;
+    }
+    if(ip == 0 || i >= 10){
+      // null, or recursive cycled loop.
       end_op();
       return -1;
     }
@@ -334,7 +343,6 @@ sys_open(void)
       return -1;
     }
   }
-
   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
     iunlockput(ip);
     end_op();
@@ -503,3 +511,84 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_symlink(void)
+{
+  char new[MAXPATH], old[MAXPATH];
+//  struct inode *ip;
+
+  if(argstr(0, old, MAXPATH) < 0 || argstr(1, new, MAXPATH) < 0)
+    return -1;
+  // old->src, new->target. symlnk src to target.
+  begin_op(); // start a transaction. intr_off.
+
+  //
+
+  // a symlink does not require target(src) available. it is ok to be null.
+//  int i;
+//  for (i = 0; i < 10; i ++) {
+//    ip = namei(old);
+//    if (ip == 0 || ip->type != T_SYMLINK) // null or not symlnk, then stop.
+//      break;
+//    memmove(old, ip->pth, DIRSIZ);
+//    //old = ip->pth;
+//  }
+//  if (ip == 0 || i >= 10) {
+//    // symlnk cycle
+//    return -1;
+//  }
+  // you dont find the origin here. we will process it in the sys_open.
+  // a symlink does not require target(src) available. it is ok to be null.
+//  if((ip = namei(old)) == 0){
+//    end_op();
+//    return -1;
+//  }
+
+//  ilock(ip);
+//  if(ip->type == T_DIR){
+//    // you cannot link with a DIR
+//    iunlockput(ip);
+//    end_op();
+//    return -1;
+//  }
+////  symlink src does not have to be existence.
+////  ip->nlink++;
+////  iupdate(ip);
+//  iunlock(ip);
+
+//  if((dp = nameiparent(new, name)) == 0) // find path's parent.
+//    goto bad;
+//  ilock(dp);
+  // now we dont care if they are in the same dev.
+//  if(dirlink(dp, name, ip->inum) < 0){
+//    iunlockput(dp);
+//    goto bad;
+//  }
+
+  struct inode *nr = namei(new);
+  if (!nr) {
+    nr = create(new, T_SYMLINK, 0, 0);
+    // create immediately acquire lock on nr.
+    if(nr == 0){
+      end_op();
+      return -1;
+    }
+  } else {
+    ilock(nr);
+  }
+  memmove(nr->pth, old, DIRSIZ);
+  iunlockput(nr);
+  //iput(ip);
+  end_op();
+  return 0;
+
+//bad:
+//  ilock(ip);
+////  ip->nlink--;
+//  iupdate(ip);
+//  iunlockput(ip);
+//  end_op();
+//  return -1;
+}
+
